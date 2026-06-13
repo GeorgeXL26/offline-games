@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tetris</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:#111;display:flex;justify-content:center;align-items:center;height:100vh;font-family:'Courier New',monospace;}
+#game{display:flex;gap:20px;align-items:flex-start;padding:20px;}
+canvas{border:2px solid #444;display:block;background:#000;}
+#side{color:#fff;}
+#side div{margin-bottom:15px;}
+#side span{font-size:18px;color:#aaa;}
+#side .val{font-size:24px;color:#fff;font-weight:bold;}
+#side h3{color:#888;font-size:14px;margin-bottom:5px;}
+#msg{color:#888;text-align:center;margin-top:10px;}
+</style>
+</head>
+<body>
+<div>
+<div id="game">
+<canvas id="board" width="300" height="600" tabindex="0"></canvas>
+<div id="side">
+<div><h3>NEXT</h3><canvas id="next" width="120" height="120"></canvas></div>
+<div><span>SCORE</span><div class="val" id="score">0</div></div>
+<div><span>LINES</span><div class="val" id="lines">0</div></div>
+<div><span>LEVEL</span><div class="val" id="level">1</div></div>
+</div>
+</div>
+<div id="msg">Arrow keys: move &nbsp;|&nbsp; Up: rotate &nbsp;|&nbsp; Space: drop</div>
+</div>
+<script>
+const bcvs=document.getElementById('board'),bctx=bcvs.getContext('2d');
+const ncvs=document.getElementById('next'),nctx=ncvs.getContext('2d');
+const sEl=document.getElementById('score'),lEl=document.getElementById('lines'),lvEl=document.getElementById('level');
+
+const COLS=10,ROWS=20,CS=30;
+
+// Tetromino shapes
+const SHAPES={
+  I:[[1,1,1,1]],
+  O:[[1,1],[1,1]],
+  T:[[0,1,0],[1,1,1]],
+  S:[[0,1,1],[1,1,0]],
+  Z:[[1,1,0],[0,1,1]],
+  J:[[1,0,0],[1,1,1]],
+  L:[[0,0,1],[1,1,1]],
+};
+
+const COLORS={I:'#0ff',O:'#ff0',T:'#a0f',S:'#0f0',Z:'#f00',J:'#00f',L:'#f80'};
+
+const PIECES=['I','O','T','S','Z','J','L'];
+
+let board=[],piece=null,nextPiece=null,score=0,lines=0,level=1,gameOver=false,dropTimer=0,dropInterval=1000;
+
+function randPiece(){return PIECES[Math.floor(Math.random()*PIECES.length)];}
+
+function newPiece(){
+  let type=nextPiece||randPiece();
+  nextPiece=randPiece();
+  let shape=SHAPES[type].map(r=>[...r]);
+  return{type,shape,x:Math.floor((COLS-shape[0].length)/2),y:0};
+}
+
+function initBoard(){
+  board=[];
+  for(let y=0;y<ROWS;y++){board[y]=[];for(let x=0;x<COLS;x++)board[y][x]=0;}
+}
+
+function rotate(){
+  if(!piece)return;
+  let s=piece.shape;
+  let rot=s[0].map((_,i)=>s.map(r=>r[i]).reverse());
+  let px=piece.x,py=piece.y;
+  // Wall kick
+  let kicks=[0,-1,1,-2,2];
+  for(let k of kicks){
+    let ok=true;
+    for(let y=0;y<rot.length&&ok;y++)
+      for(let x=0;x<rot[0].length&&ok;x++)
+        if(rot[y][x]){
+          let nx=px+x+k,ny=py+y;
+          if(nx<0||nx>=COLS||ny>=ROWS||(ny>=0&&board[ny][nx]))ok=false;
+        }
+    if(ok){piece.shape=rot;piece.x+=k;return;}
+  }
+}
+
+function valid(p,px,py){
+  for(let y=0;y<p.length;y++)
+    for(let x=0;x<p[0].length;x++)
+      if(p[y][x]){
+        let nx=px+x,ny=py+y;
+        if(nx<0||nx>=COLS||ny>=ROWS||(ny>=0&&board[ny][nx]))return false;
+      }
+  return true;
+}
+
+function lock(){
+  if(!piece)return;
+  let s=piece.shape;
+  for(let y=0;y<s.length;y++)
+    for(let x=0;x<s[0].length;x++)
+      if(s[y][x]){
+        let by=piece.y+y;
+        if(by<0){gameOver=true;return;}
+        board[by][piece.x+x]=piece.type;
+      }
+  clearLines();
+  piece=newPiece();
+  if(!valid(piece.shape,piece.x,piece.y))gameOver=true;
+}
+
+function clearLines(){
+  let cleared=0;
+  for(let y=ROWS-1;y>=0;y--){
+    if(board[y].every(c=>c)){
+      board.splice(y,1);
+      board.unshift(new Array(COLS).fill(0));
+      cleared++;y++;
+    }
+  }
+  if(cleared){
+    let pts=[0,100,300,500,800][cleared];
+    score+=pts*level;
+    lines+=cleared;
+    level=Math.floor(lines/10)+1;
+    dropInterval=Math.max(100,1000-(level-1)*80);
+    sEl.textContent=score;lEl.textContent=lines;lvEl.textContent=level;
+  }
+}
+
+function move(dx){
+  if(!piece||gameOver)return;
+  if(valid(piece.shape,piece.x+dx,piece.y))piece.x+=dx;
+}
+
+function hardDrop(){
+  if(!piece||gameOver)return;
+  while(valid(piece.shape,piece.x,piece.y+1))piece.y++;
+  lock();
+}
+
+function update(){
+  if(gameOver)return;
+  dropTimer+=16;
+  if(dropTimer>=dropInterval){
+    dropTimer=0;
+    if(valid(piece.shape,piece.x,piece.y+1))piece.y++;
+    else lock();
+  }
+}
+
+function drawBoard(){
+  bctx.fillStyle='#000';bctx.fillRect(0,0,300,600);
+
+  // Grid lines
+  bctx.strokeStyle='#222';bctx.lineWidth=0.5;
+  for(let x=0;x<=COLS;x++){bctx.beginPath();bctx.moveTo(x*CS,0);bctx.lineTo(x*CS,600);bctx.stroke();}
+  for(let y=0;y<=ROWS;y++){bctx.beginPath();bctx.moveTo(0,y*CS);bctx.lineTo(300,y*CS);bctx.stroke();}
+
+  // Board
+  for(let y=0;y<ROWS;y++)
+    for(let x=0;x<COLS;x++)
+      if(board[y][x])drawCell(bctx,x,y,COLORS[board[y][x]]);
+
+  // Ghost piece
+  if(piece&&!gameOver){
+    let gy=piece.y;
+    while(valid(piece.shape,piece.x,gy+1))gy++;
+    let s=piece.shape;
+    for(let y=0;y<s.length;y++)
+      for(let x=0;x<s[0].length;x++)
+        if(s[y][x]){bctx.fillStyle='rgba(255,255,255,0.1)';bctx.fillRect((piece.x+x)*CS+1,(gy+y)*CS+1,CS-2,CS-2);}
+  }
+
+  // Current piece
+  if(piece&&!gameOver){
+    let s=piece.shape;
+    for(let y=0;y<s.length;y++)
+      for(let x=0;x<s[0].length;x++)
+        if(s[y][x])drawCell(bctx,piece.x+x,piece.y+y,COLORS[piece.type]);
+  }
+
+  // Game over
+  if(gameOver){
+    bctx.fillStyle='rgba(0,0,0,0.7)';bctx.fillRect(0,180,300,120);
+    bctx.fillStyle='#f00';bctx.font='bold 36px Courier New';bctx.textAlign='center';
+    bctx.fillText('GAME OVER',150,260);
+    bctx.fillStyle='#fff';bctx.font='16px Courier New';
+    bctx.fillText('Press SPACE',150,290);
+  }
+}
+
+function drawCell(ctx,x,y,color){
+  ctx.fillStyle=color;
+  ctx.fillRect(x*CS+1,y*CS+1,CS-2,CS-2);
+  ctx.fillStyle='rgba(255,255,255,0.2)';
+  ctx.fillRect(x*CS+1,y*CS+1,CS-2,4);
+  ctx.fillRect(x*CS+1,y*CS+1,4,CS-2);
+}
+
+function drawNext(){
+  nctx.fillStyle='#000';nctx.fillRect(0,0,120,120);
+  if(!nextPiece)return;
+  let s=SHAPES[nextPiece];
+  let bw=Math.max(...s.map(r=>r.length))*CS;
+  let bh=s.length*CS;
+  let ox=(120-bw)/2,oy=(120-bh)/2;
+  for(let y=0;y<s.length;y++)
+    for(let x=0;x<s[y].length;x++)
+      if(s[y][x]){
+        nctx.fillStyle=COLORS[nextPiece];
+        nctx.fillRect(ox+x*CS+1,oy+y*CS+1,CS-2,CS-2);
+        nctx.fillStyle='rgba(255,255,255,0.2)';
+        nctx.fillRect(ox+x*CS+1,oy+y*CS+1,CS-2,3);
+        nctx.fillRect(ox+x*CS+1,oy+y*CS+1,3,CS-2);
+      }
+}
+
+function restart(){
+  initBoard();score=0;lines=0;level=1;dropInterval=1000;dropTimer=0;gameOver=false;
+  sEl.textContent='0';lEl.textContent='0';lvEl.textContent='1';
+  nextPiece=null;
+  piece=newPiece();
+}
+
+function loop(){
+  update();
+  drawBoard();
+  drawNext();
+  requestAnimationFrame(loop);
+}
+
+// Controls - use window for Safari file:// compatibility
+window.addEventListener('keydown',function(e){
+  if(gameOver&&e.code==='Space'){restart();e.preventDefault();return;}
+  if(gameOver)return;
+  switch(e.code){
+    case 'ArrowLeft':move(-1);break;
+    case 'ArrowRight':move(1);break;
+    case 'ArrowUp':rotate();break;
+    case 'ArrowDown':if(valid(piece.shape,piece.x,piece.y+1))piece.y++;dropTimer=0;break;
+    case 'Space':hardDrop();break;
+  }
+  if(e.code.startsWith('Arrow')||e.code==='Space')e.preventDefault();
+});
+
+restart();
+loop();
+window.addEventListener('click',()=>bcvs.focus());
+// Retry focus after page loads
+setTimeout(()=>bcvs.focus(),500);
+</script>
+</body>
+</html>
