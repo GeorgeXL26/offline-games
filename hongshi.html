@@ -1,0 +1,874 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>红十</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#1a1a2e;display:flex;justify-content:center;align-items:center;height:100vh;font-family:'Segoe UI',sans-serif;overflow:hidden}
+#wrap{position:relative}
+canvas{display:block;border:2px solid #333;border-radius:8px;background:#2d5a27;cursor:pointer}
+#ui{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);display:flex;gap:12px;z-index:10}
+#ui button{padding:10px 28px;font-size:16px;font-weight:bold;border:none;border-radius:6px;cursor:pointer;min-width:80px}
+#playBtn{background:#e8b84b;color:#1a1a2e}#playBtn:hover{background:#f0c860}
+#passBtn{background:#555;color:#ccc}#passBtn:hover{background:#666}
+#playBtn:disabled,#passBtn:disabled{opacity:0.4;cursor:default}
+</style>
+</head>
+<body>
+<div id="wrap">
+<canvas id="c" width="900" height="620"></canvas>
+<div id="ui">
+<button id="playBtn">出牌</button>
+<button id="passBtn">不要</button>
+<button id="replayBtn" style="background:#4caf50;color:#fff;display:none">再来一局</button>
+</div>
+</div>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+const playBtn=document.getElementById('playBtn'),passBtn=document.getElementById('passBtn'),replayBtn=document.getElementById('replayBtn');
+
+// ─── Constants ───
+const SUITS=['♥','♦','♣','♠'],SUIT_COL=['#d32f2f','#d32f2f','#222','#222'];
+const RANK_LABEL=['3','4','5','6','7','8','9','10','J','Q','K','A','2'];
+const RED10=18,BJOKER=17,SJOKER=16;
+const HUMAN=0,BOT1=1,BOT2=2,BOT3=3;
+const CARD_W=56,CARD_H=80,CARD_R=6;
+
+// ─── Deck ───
+function createDeck(){
+  let d=[];
+  for(let s=0;s<4;s++)
+    for(let r=0;r<13;r++){
+      let v=r+3;
+      if(s<=1&&RANK_LABEL[r]==='10')v=RED10;
+      d.push({suit:s,label:RANK_LABEL[r],val:v,id:d.length});
+    }
+  d.push({suit:4,label:'S',val:SJOKER,id:d.length}); // small joker
+  d.push({suit:4,label:'B',val:BJOKER,id:d.length}); // big joker
+  return d;
+}
+function shuffle(a){for(let i=a.length-1;i>0;i--){let j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a}
+function deal(){
+  let d=shuffle(createDeck());
+  let h=[[],[],[],[]];
+  let sizes=[13,14,13,14]; shuffle(sizes);
+  let idx=0;
+  for(let p=0;p<4;p++)for(let i=0;i<sizes[p];i++)h[p].push(d[idx++]);
+  for(let p=0;p<4;p++)h[p].sort((a,b)=>b.val-a.val);
+  return h;
+}
+
+// ─── Hand type detection ───
+function getHandType(cards){
+  if(!cards||!cards.length)return null;
+  cards.sort((a,b)=>b.val-a.val);
+  let n=cards.length;
+  if(n===1)return {type:'single',rank:cards[0].val,len:1};
+
+  // Check all same value
+  let sameVal=cards.every(c=>c.val===cards[0].val);
+  let val=cards[0].val;
+
+  // Joker bomb (big+small)
+  if(n===2&&cards.some(c=>c.val===BJOKER)&&cards.some(c=>c.val===SJOKER))
+    return {type:'jokerbomb',rank:0,len:2};
+  // Red10 bomb
+  if(n===2&&cards[0].val===RED10&&cards[1].val===RED10)
+    return {type:'red10bomb',rank:0,len:2};
+  // Pair
+  if(n===2&&sameVal)return {type:'pair',rank:val,len:2};
+  // Triple bomb
+  if(n===3&&sameVal)return {type:'threebomb',rank:val,len:3};
+  // Four bomb
+  if(n===4&&sameVal)return {type:'fourbomb',rank:val,len:4};
+
+  // Straight
+  if(n>=3){
+    let ok=true;
+    for(let i=1;i<n;i++)if(cards[i].val!==cards[i-1].val-1){ok=false;break;}
+    // No 2 in straights, no jokers
+    if(ok&&val<=14&&cards.every(c=>c.val>=3&&c.val<=14))
+      return {type:'straight',rank:cards[n-1].val,len:n}; // rank = lowest card
+  }
+
+  // Sister pairs (连对)
+  if(n>=4&&n%2===0){
+    let pairs=n/2;
+    let ok=true;
+    for(let i=0;i<pairs;i++){
+      if(cards[i*2].val!==cards[i*2+1].val){ok=false;break;}
+      if(i>0&&cards[i*2].val!==cards[(i-1)*2].val-1){ok=false;break;}
+    }
+    let minVal=cards[n-1].val; // lowest card value
+    if(ok&&minVal>=3&&cards[0].val<=15)
+      return {type:'sister',rank:minVal,len:n};
+  }
+
+  return null;
+}
+
+// ─── Can beat? ───
+function isBomb(type){
+  return type==='threebomb'||type==='fourbomb'||type==='jokerbomb'||type==='red10bomb';
+}
+function bombOrder(type){
+  if(type==='red10bomb')return 4;
+  if(type==='jokerbomb')return 3;
+  if(type==='fourbomb')return 2;
+  if(type==='threebomb')return 1;
+  return 0;
+}
+function canBeat(play,last){
+  if(!last)return true;
+  if(!play||!last)return false;
+  if(isBomb(play.type)&&!isBomb(last.type))return true;
+  if(isBomb(play.type)&&isBomb(last.type)){
+    let bo=bombOrder(play.type),bl=bombOrder(last.type);
+    if(bo!==bl)return bo>bl;
+    return play.rank>last.rank;
+  }
+  if(play.type!==last.type)return false;
+  if(play.len!==last.len)return false;
+  return play.rank>last.rank;
+}
+
+// ─── Find ♥3 holder ───
+function findHeart3(hands){
+  // ♥3 = suit 0, val 3
+  for(let p=0;p<4;p++)
+    if(hands[p].some(c=>c.suit===0&&c.val===3))
+      return p;
+  return 0;
+}
+
+// ─── Determine teams ───
+function getTeams(hands){
+  let red10Holders=[];
+  for(let p=0;p<4;p++)
+    if(hands[p].some(c=>c.val===RED10))
+      red10Holders.push(p);
+  let isSolo=red10Holders.length===1||red10Holders[0]===red10Holders[1];
+  if(red10Holders.length===0)return{teamA:[],teamB:[],isSolo:false,red10Holders:[]};
+  // same player has both -> solo
+  if(red10Holders[0]===red10Holders[1])return{teamA:[red10Holders[0]],teamB:[0,1,2,3].filter(p=>p!==red10Holders[0]),isSolo:true,red10Holders:[red10Holders[0]]};
+  return{teamA:[red10Holders[0],red10Holders[1]],teamB:[0,1,2,3].filter(p=>p!==red10Holders[0]&&p!==red10Holders[1]),isSolo:false,red10Holders};
+}
+
+// ─── Bot AI ───
+function genPlays(hand,lastPlay){
+  // Returns array of {cards,type,rank,len} that beat lastPlay (null=leading)
+  let sorted=[...hand].sort((a,b)=>b.val-a.val);
+  let byVal={};
+  for(let c of sorted){(byVal[c.val]=byVal[c.val]||[]).push(c);}
+  let plays=[];
+
+  if(!lastPlay){
+    // Leading: all singles + pairs (avoid bombs for leading)
+    for(let v in byVal){
+      plays.push({cards:[byVal[v][0]],type:'single',rank:+v,len:1});
+    }
+    for(let v in byVal){
+      let vn=+v;
+      if(byVal[v].length>=2&&vn!==RED10&&vn!==BJOKER&&vn!==SJOKER)
+        plays.push({cards:byVal[v].slice(0,2),type:'pair',rank:vn,len:2});
+    }
+    return plays;
+  }
+
+  let lt=lastPlay.type,lr=lastPlay.rank,ll=lastPlay.len;
+
+  // Same-type plays
+  if(lt==='single'){
+    for(let v in byVal){let vn=+v;if(vn>lr)plays.push({cards:[byVal[v][0]],type:'single',rank:vn,len:1});}
+  }else if(lt==='pair'){
+    for(let v in byVal){
+      let vn=+v;
+      if(byVal[v].length>=2&&vn>lr&&vn!==RED10&&vn!==BJOKER&&vn!==SJOKER)
+        plays.push({cards:byVal[v].slice(0,2),type:'pair',rank:vn,len:2});
+    }
+  }else if(lt==='straight'){
+    let cand=findStraights(byVal,ll).filter(c=>c.rank>lr);
+    plays.push(...cand);
+  }else if(lt==='sister'){
+    let cand=findSisters(byVal,ll/2).filter(c=>c.rank>lr);
+    plays.push(...cand);
+  }
+
+  // Bombs
+  let bombs=findBombs(byVal);
+  if(!isBomb(lt)){
+    plays.push(...bombs);
+  }else{
+    let bo=bombOrder(lt);
+    for(let b of bombs){
+      let bbo=bombOrder(b.type);
+      if(bbo>bo||(bbo===bo&&b.rank>lr))plays.push(b);
+    }
+  }
+  return plays;
+}
+function findStraights(byVal,length){
+  let res=[];
+  let vals=Object.keys(byVal).map(Number).filter(v=>v>=3&&v<=14).sort((a,b)=>a-b);
+  for(let i=0;i<=vals.length-length;i++){
+    let ok=true;
+    for(let j=0;j<length;j++)
+      if(!byVal[vals[i]+j]||vals[i]+j!==vals[i+j]){ok=false;break;}
+    if(ok){
+      let cards=[];
+      for(let j=0;j<length;j++)cards.push(byVal[vals[i]+j][0]);
+      res.push({cards,type:'straight',rank:vals[i],len:length});
+    }
+  }
+  return res;
+}
+function findSisters(byVal,prs){
+  let res=[];
+  let vals=Object.keys(byVal).filter(v=>byVal[v].length>=2).map(Number).filter(v=>v>=3&&v<=15).sort((a,b)=>a-b);
+  for(let i=0;i<=vals.length-prs;i++){
+    let ok=true;
+    for(let j=0;j<prs;j++)
+      if(vals[i]+j!==vals[i+j]){ok=false;break;}
+    if(ok){
+      let cards=[];
+      for(let j=prs-1;j>=0;j--)
+        cards.push(byVal[vals[i+j]][0],byVal[vals[i+j]][1]);
+      res.push({cards,type:'sister',rank:vals[i],len:prs*2});
+    }
+  }
+  return res;
+}
+function findBombs(byVal){
+  let bombs=[];
+  // Red10 bomb
+  if(byVal[RED10]&&byVal[RED10].length>=2)
+    bombs.push({cards:byVal[RED10].slice(0,2),type:'red10bomb',rank:0,len:2});
+  // Joker bomb
+  if(byVal[BJOKER]&&byVal[SJOKER])
+    bombs.push({cards:[byVal[BJOKER][0],byVal[SJOKER][0]],type:'jokerbomb',rank:0,len:2});
+  // Four bombs
+  for(let v in byVal){
+    let val=parseInt(v);
+    if(byVal[v].length>=4&&val!==RED10)
+      bombs.push({cards:byVal[v].slice(0,4),type:'fourbomb',rank:val,len:4});
+  }
+  // Three bombs
+  for(let v in byVal){
+    let val=parseInt(v);
+    if(byVal[v].length>=3&&val!==RED10&&val!==BJOKER&&val!==SJOKER)
+      bombs.push({cards:byVal[v].slice(0,3),type:'threebomb',rank:val,len:3});
+  }
+  bombs.sort((a,b)=>{
+    let oa=bombOrder(a.type),ob=bombOrder(b.type);
+    if(oa!==ob)return ob-oa;
+    return b.rank-a.rank;
+  });
+  return bombs;
+}
+
+function pickRandom(a){return a[Math.floor(Math.random()*a.length)]}
+
+function botChoosePlay(hand,lastPlay){
+  if(!hand||!hand.length)return null;
+
+  let plays=genPlays(hand,lastPlay);
+  if(!plays.length)return null;
+
+  if(!lastPlay||!lastPlay.type){
+    // Leading: mix of plays with some strategy
+    let singles=plays.filter(p=>p.type==='single');
+    let pairs=plays.filter(p=>p.type==='pair');
+    // Also find straights/sisters
+    let sorted=[...hand].sort((a,b)=>b.val-a.val);
+    let byVal={};
+    for(let c of sorted){(byVal[c.val]=byVal[c.val]||[]).push(c);}
+    let strs=findStraights(byVal,3).filter(s=>{let bv={};for(let c of s.cards){(bv[c.val]=bv[c.val]||[]).push(c)};let b=findBombs(bv);return!b.length;});
+    let sists=findSisters(byVal,2);
+    // Avoid bombs for leading unless desperate
+    let safePlays=[];
+    if(singles.length)safePlays.push({w:'single',p:singles});
+    if(pairs.length&&Math.random()<0.4)safePlays.push({w:'pair',p:pairs});
+    if(strs.length&&Math.random()<0.3)safePlays.push({w:'str',p:strs});
+    if(sists.length&&Math.random()<0.2)safePlays.push({w:'sist',p:sists});
+    // Also add bombs as low priority
+    let bombs=plays.filter(p=>isBomb(p.type));
+    if(bombs.length&&hand.length<=4)safePlays.push({w:'bomb',p:bombs});
+    if(!safePlays.length)return singles.length?singles[0]:plays[0];
+    let chosen=pickRandom(safePlays);
+    chosen.p.sort((a,b)=>a.rank-b.rank);
+    // Sometimes play a middle card instead of lowest
+    if(chosen.p.length>2&&Math.random()<0.3)
+      return chosen.p[Math.floor(chosen.p.length/2)];
+    return chosen.p[0];
+  }
+
+  if(!plays.length)return null;
+
+  // Following: prefer non-bomb, but mix up rank choices
+  let nonBombs=plays.filter(p=>!isBomb(p.type));
+  let bombs=plays.filter(p=>isBomb(p.type));
+
+  if(nonBombs.length){
+    nonBombs.sort((a,b)=>a.rank-b.rank);
+    // Sometimes play middle, sometimes lowest
+    if(nonBombs.length>2&&Math.random()<0.3)
+      return nonBombs[Math.floor(nonBombs.length/2)];
+    return nonBombs[0];
+  }
+
+  // Only bombs left - use if behind in cards
+  if(bombs.length&&hand.length<=3)return bombs[0];
+  return null; // pass rather than waste bombs
+}
+
+// ─── Game State ───
+let G={
+  hands:[],
+  currentPlayer:0,
+  starter:0,
+  lastPlay:null,
+  lastPlayer:-1,
+  passCount:0,
+  finished:[],  // [false,false,false,false] - who's out
+  phase:'idle', // idle|play|gameover
+  selected:[],
+  msg:'',
+  teams:null,
+  revealed:false, // teams fully revealed when both red10s played
+  played10s:0,    // count of red10s played so far
+  winner:-1,
+  botTimer:null,
+  turnPhase:'waiting' // human|bot|waiting
+};
+
+function resetGame(){
+  if(G.botTimer){clearTimeout(G.botTimer);G.botTimer=null;}
+  G.hands=deal();
+  G.starter=findHeart3(G.hands);
+  G.currentPlayer=G.starter;
+  G.lastPlay=null;
+  G.lastPlayer=-1;
+  G.passCount=0;
+  G.finished=[false,false,false,false];
+  G.phase='play';
+  G.selected=[];
+  G.teams=getTeams(G.hands);
+  G.revealed=false;G.played10s=0;
+  G.winner=-1;
+  G.msg='';
+  G.turnPhase='waiting';
+  showGameUI();
+  setUI(false);
+  render();
+  nextTurn();
+}
+
+function checkTeamWin(){
+  let t=G.teams; if(!t)return -1;
+  if(t.isSolo&&G.finished[t.teamA[0]])return t.teamA[0];
+  if(t.teamA.length>1&&t.teamA.every(p=>G.finished[p]))return t.teamA[0];
+  if(t.teamB.every(p=>G.finished[p]))return t.teamB[0];
+  return -1;
+}
+
+function nextTurn(){
+  if(G.phase!=='play')return;
+  if(G.turnPhase==='human')setUI(false);
+
+  // Check team win condition
+  let w=checkTeamWin();
+  if(w>=0){
+    G.phase='gameover';G.winner=w;render();return;
+  }
+
+  // Skip finished players
+  while(G.finished[G.currentPlayer])
+    G.currentPlayer=(G.currentPlayer+1)%4;
+
+  // Check trick over (all remaining players passed consecutively)
+  let rem=4-G.finished.filter(Boolean).length;
+  if(G.passCount>=rem-1&&G.lastPlayer>=0){
+    G.currentPlayer=G.lastPlayer;
+    G.lastPlay=null;
+    G.lastPlayer=-1;
+    G.passCount=0;
+    G.msg='';
+    // Skip if trick winner is finished
+    while(G.finished[G.currentPlayer])
+      G.currentPlayer=(G.currentPlayer+1)%4;
+  }
+
+  if(G.currentPlayer===HUMAN){
+    G.turnPhase='human';
+    setUI(true);
+    render();
+  }else{
+    G.turnPhase='bot';
+    setUI(false);
+    render();
+    G.botTimer=setTimeout(()=>{
+      if(G.phase!=='play')return;
+      doBotTurn(G.currentPlayer);
+    },600);
+  }
+}
+
+function advancePlayer(){
+  G.currentPlayer=(G.currentPlayer+1)%4;
+}
+
+function revealOnPlay(cards){
+  if(G.revealed)return;
+  let r10s=cards.filter(c=>c.val===RED10).length;
+  if(r10s>0){
+    G.played10s+=r10s;
+    if(G.played10s>=2){
+      G.revealed=true;
+      G.msg+=' Teams revealed!';
+    }else{
+      G.msg+=' Red 10 played!';
+    }
+  }
+}
+
+function doBotTurn(player){
+  if(G.phase!=='play')return;
+  let play=botChoosePlay(G.hands[player],G.lastPlay&&G.lastPlay.type?G.lastPlay:null);
+  if(play){
+    for(let c of play.cards){
+      let idx=G.hands[player].findIndex(h=>h.id===c.id);
+      if(idx>=0)G.hands[player].splice(idx,1);
+    }
+    G.lastPlay={type:play.type,rank:play.rank,len:play.len,cards:play.cards,player};
+    G.lastPlayer=player;
+    G.passCount=0;
+    G.msg='P'+player+' played '+describePlay(play);
+    revealOnPlay(play.cards);
+    // Check if finished
+    if(!G.hands[player].length){
+      G.finished[player]=true;
+      G.msg+=' P'+player+' is out!';
+    }
+  }else{
+    G.passCount++;
+    G.msg='P'+player+' passed';
+  }
+  advancePlayer();
+  render();
+  setTimeout(()=>nextTurn(),400);
+}
+
+function describePlay(play){
+  if(!play)return '';
+  if(play.type==='single')return rankLabel(play.rank);
+  if(play.type==='pair')return rankLabel(play.rank)+' pair';
+  if(play.type==='threebomb')return rankLabel(play.rank)+' triple bomb!';
+  if(play.type==='fourbomb')return rankLabel(play.rank)+' four bomb!!';
+  if(play.type==='jokerbomb')return 'Joker bomb!!';
+  if(play.type==='red10bomb')return 'Red 10 bomb!!!';
+  if(play.type==='straight')return 'Straight '+play.len;
+  if(play.type==='sister')return 'Sister '+play.len;
+  return '';
+}
+function rankLabel(v){
+  if(v===RED10)return'10(红)';
+  if(v===BJOKER)return'BJ';
+  if(v===SJOKER)return'SJ';
+  return RANK_LABEL[v-3]||'?'+v;
+}
+
+// ─── Human play ───
+function humanPlay(){
+  if(G.turnPhase!=='human')return;
+  let cards=G.selected.map(i=>G.hands[HUMAN][i]);
+  if(!cards.length){G.msg='Select cards first!';render();return;}
+  let play=getHandType(cards);
+  if(!play){G.msg='Invalid hand!';render();return;}
+
+  let last=G.lastPlay&&G.lastPlay.type?G.lastPlay:null;
+  if(!canBeat(play,last)){
+    G.msg='Can\'t beat current hand!';
+    render();
+    return;
+  }
+
+  // Play
+  for(let c of cards){
+    let idx=G.hands[HUMAN].findIndex(h=>h.id===c.id);
+    if(idx>=0)G.hands[HUMAN].splice(idx,1);
+  }
+  G.lastPlay={...play,cards,player:HUMAN};
+  G.lastPlayer=HUMAN;
+  G.passCount=0;
+  G.selected=[];
+  G.msg='You played '+describePlay(play);
+  revealOnPlay(cards);
+  if(!G.hands[HUMAN].length){
+    G.finished[HUMAN]=true;
+    G.msg+=' You are out!';
+  }
+  G.turnPhase='waiting';
+  setUI(false);
+  render();
+  advancePlayer();
+  setTimeout(()=>nextTurn(),300);
+}
+
+function humanPass(){
+  if(G.turnPhase!=='human')return;
+  if(!G.lastPlay||!G.lastPlay.type){G.msg='You must lead!';render();return;}
+  G.passCount++;
+  G.selected=[];
+  G.msg='You passed';
+  G.turnPhase='waiting';
+  setUI(false);
+  render();
+  advancePlayer();
+  setTimeout(()=>nextTurn(),300);
+}
+
+function setUI(en){
+  playBtn.disabled=!en;
+  passBtn.disabled=!en;
+}
+function showGameUI(){playBtn.style.display='inline-block';passBtn.style.display='inline-block';replayBtn.style.display='none';}
+
+// ─── Rendering ───
+function render(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  // Table bg
+  ctx.fillStyle='#2d5a27';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  if(G.phase==='idle'){renderIdle();return;}
+
+  // Bots
+  renderBot(BOT1,150,30,1);
+  renderBot(BOT2,400,5,2);
+  renderBot(BOT3,660,30,3);
+
+  // Table center
+  renderTable();
+
+  // Human hand
+  renderHumanHand();
+
+  // Info & msg
+  ctx.fillStyle='#fff';
+  ctx.font='14px sans-serif';
+  ctx.textAlign='center';
+  let info='';
+  if(G.teams){
+    let humanHasRed=G.hands[HUMAN].some(c=>c.val===RED10);
+    if(G.revealed){
+      let ta=G.teams.teamA.map(p=>'P'+p).join(','),tb=G.teams.teamB.map(p=>'P'+p).join(',');
+      info='Team A: '+ta+' | Team B: '+tb;
+      if(G.teams.isSolo)info='SOLO: P'+G.teams.teamA[0]+' vs P'+G.teams.teamB.join(',P');
+    }else if(humanHasRed){
+      // You know your teammate
+      let myTeam=G.teams.teamA.includes(HUMAN)?G.teams.teamA:G.teams.teamB;
+      let otherTeam=G.teams.teamA.includes(HUMAN)?G.teams.teamB:G.teams.teamA;
+      info='You & P'+(myTeam.find(p=>p!==HUMAN)||'?')+' | Opponents: P'+otherTeam.join(',P');
+      if(G.teams.isSolo)info='You are SOLO vs P'+otherTeam.join(',P');
+    }else{
+      info='Teams hidden ('+(2-G.played10s)+' red 10s remain)';
+    }
+  }
+  ctx.fillText(info,450,115);
+  if(G.msg){
+    ctx.fillStyle='#ffd700';
+    ctx.fillText(G.msg,450,98);
+  }
+
+  if(G.phase==='gameover'){
+    renderGameOver();
+  }
+}
+
+function renderIdle(){
+  ctx.fillStyle='rgba(0,0,0,0.6)';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle='#ffd700';
+  ctx.font='bold 48px sans-serif';
+  ctx.textAlign='center';
+  ctx.fillText('红十',450,260);
+  ctx.fillStyle='#fff';
+  ctx.font='20px sans-serif';
+  ctx.fillText('Click to start',450,320);
+}
+
+function renderBot(pIdx,x,y,label){
+  let n=G.hands[pIdx]?G.hands[pIdx].length:0;
+  let finished=G.finished[pIdx];
+  let isActive=G.phase==='play'&&G.currentPlayer===pIdx&&!finished;
+
+  if(finished){
+    ctx.fillStyle='rgba(0,0,0,0.4)';
+    roundRect(ctx,x,y-5,200,90,4);
+    ctx.fill();
+    ctx.fillStyle='#666';
+    ctx.font='bold 16px sans-serif';
+    ctx.textAlign='center';
+    ctx.fillText('OUT',x+30,y+40);
+    ctx.fillStyle='#888';
+    ctx.font='12px sans-serif';
+    ctx.fillText('P'+pIdx,x+30,y+60);
+    return;
+  }
+
+  for(let i=0;i<Math.min(n,12);i++){
+    let cx=x+i*14;
+    if(cx+CARD_W>canvas.width-20)break;
+    ctx.fillStyle='#1a3a6b';
+    ctx.strokeStyle='#2a5a9b';
+    ctx.lineWidth=1;
+    roundRect(ctx,cx,y-5,CARD_W,CARD_H,4);
+    ctx.fill();ctx.stroke();
+    ctx.fillStyle='#2a5a9b';
+    ctx.font='10px sans-serif';
+    ctx.textAlign='center';
+    ctx.fillText('♦',cx+CARD_W/2,y+30);
+    ctx.fillText('♥',cx+CARD_W/2,y+50);
+  }
+  ctx.fillStyle=isActive?'#ffd700':'#aaa';
+  ctx.font=(isActive?'bold ':'')+'13px sans-serif';
+  ctx.textAlign='center';
+  ctx.fillText('P'+pIdx+' ('+n+')',x+30,y-15);
+
+  if(isActive){
+    ctx.strokeStyle='#ffd700';
+    ctx.lineWidth=2;
+    ctx.beginPath();
+    ctx.arc(x+30,y-5,12,0,Math.PI*2);
+    ctx.stroke();
+  }
+}
+
+function renderTable(){
+  let cx=450,cy=230;
+  // Last play info
+  if(G.lastPlay&&G.lastPlay.cards){
+    let cards=G.lastPlay.cards;
+    let pw=cards.length*60+20;
+    let sx=cx-pw/2;
+    for(let i=0;i<cards.length;i++){
+      drawCard(sx+i*60,cy-30,cards[i],true);
+    }
+    ctx.fillStyle='#ccc';
+    ctx.font='12px sans-serif';
+    ctx.textAlign='center';
+    ctx.fillText('P'+G.lastPlay.player, cx, cy+70);
+  }
+
+  // Show consecutive passes
+  if(G.passCount>0){
+    ctx.fillStyle='#ff9800';
+    ctx.font='13px sans-serif';
+    ctx.textAlign='center';
+    ctx.fillText('Pass x'+G.passCount, cx, cy+95);
+  }
+}
+
+function renderHumanHand(){
+  if(G.finished[HUMAN]){
+    ctx.fillStyle='rgba(0,0,0,0.4)';
+    roundRect(ctx,100,460,700,100,4);
+    ctx.fill();
+    ctx.fillStyle='#666';
+    ctx.font='bold 20px sans-serif';
+    ctx.textAlign='center';
+    ctx.fillText('You are out — waiting for teammate',450,520);
+    return;
+  }
+  let h=G.hands[HUMAN];
+  if(!h||!h.length)return;
+  let totalW=h.length*(CARD_W+4);
+  let sx=(canvas.width-totalW)/2;
+  let sy=470;
+
+  for(let i=0;i<h.length;i++){
+    let sel=G.selected.includes(i);
+    let cx=sx+i*(CARD_W+4);
+    drawCard(cx,sel?sy-18:sy,h[i],true);
+    if(sel){
+      ctx.fillStyle='rgba(255,215,0,0.3)';
+      roundRect(ctx,cx,sel?sy-18:sy,CARD_W,CARD_H,CARD_R);
+      ctx.fill();
+    }
+  }
+
+  // Turn indicator
+  if(G.currentPlayer===HUMAN&&G.turnPhase==='human'){
+    ctx.fillStyle='#ffd700';
+    ctx.font='bold 16px sans-serif';
+    ctx.textAlign='center';
+    ctx.fillText('→ Your turn',450,sy-30);
+  }
+}
+
+function drawCard(x,y,card,faceUp){
+  if(!faceUp){
+    // Card back
+    ctx.fillStyle='#1a3a6b';
+    ctx.strokeStyle='#3a6bab';
+    ctx.lineWidth=1.5;
+    roundRect(ctx,x,y,CARD_W,CARD_H,CARD_R);
+    ctx.fill();ctx.stroke();
+    ctx.fillStyle='#3a6bab';
+    ctx.font='16px sans-serif';
+    ctx.textAlign='center';
+    ctx.fillText('★',x+CARD_W/2,y+CARD_H/2+5);
+    return;
+  }
+
+  // Card face
+  ctx.fillStyle='#f5f0e8';
+  ctx.strokeStyle='#999';
+  ctx.lineWidth=1;
+  roundRect(ctx,x,y,CARD_W,CARD_H,CARD_R);
+  ctx.fill();ctx.stroke();
+
+  let isRed=card.suit<=1;
+  let isJoker=card.suit===4;
+  let color=isRed||isJoker?(card.val===RED10?'#d32f2f':'#d32f2f'):'#222';
+  if(isJoker)color=card.val===BJOKER?'#d32f2f':'#333';
+
+  ctx.fillStyle=color;
+  ctx.font='bold 14px sans-serif';
+  ctx.textAlign='center';
+
+  if(isJoker){
+    ctx.fillText(card.label==='B'?'🃏':'🃏', x+CARD_W/2, y+40);
+    ctx.font='10px sans-serif';
+    ctx.fillText(card.label==='B'?'Big':'Small', x+CARD_W/2, y+58);
+  }else{
+    ctx.font='bold 14px sans-serif';
+    ctx.fillText(SUITS[card.suit]+card.label, x+CARD_W/2, y+22);
+    ctx.font='24px sans-serif';
+    ctx.fillText(SUITS[card.suit], x+CARD_W/2, y+52);
+  }
+}
+
+function roundRect(ctx,x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+  ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);
+  ctx.closePath();
+}
+
+function renderGameOver(){
+  replayBtn.style.display='inline-block';
+  playBtn.style.display='none';
+  passBtn.style.display='none';
+  ctx.fillStyle='rgba(0,0,0,0.6)';
+  ctx.fillRect(0,170,canvas.width,150);
+  ctx.textAlign='center';
+  let iAm=G.teams&&(G.teams.teamA.includes(HUMAN)?'Team A':G.teams.teamB.includes(HUMAN)?'Team B':'?');
+  let winnerTeam=G.teams&&(G.teams.teamA.includes(G.winner)?'Team A':'Team B');
+  let myTeamWon=G.teams&&(G.teams.teamA.includes(HUMAN)&&G.teams.teamA.includes(G.winner))||(G.teams.teamB.includes(HUMAN)&&G.teams.teamB.includes(G.winner));
+  if(G.teams&&G.teams.isSolo)myTeamWon=G.winner===HUMAN;
+  ctx.fillStyle=myTeamWon?'#4caf50':'#f44336';
+  ctx.font='bold 36px sans-serif';
+  ctx.fillText(myTeamWon?'Your Team Wins!':'Game Over',450,250);
+  ctx.fillStyle='#fff';
+  ctx.font='18px sans-serif';
+  if(G.teams&&G.teams.isSolo){
+    ctx.fillText(G.winner===HUMAN?'You (Solo) won!':'Solo P'+G.winner+' won!',450,290);
+  }else{
+    ctx.fillText(winnerTeam+' won!',450,290);
+  }
+  ctx.fillStyle='#aaa';
+  ctx.font='14px sans-serif';
+  ctx.fillText('',450,320);
+}
+
+// ─── Events ───
+canvas.addEventListener('click',function(e){
+  if(G.phase==='idle'||G.phase==='gameover'){resetGame();return;}
+  if(G.currentPlayer!==HUMAN||G.turnPhase!=='human')return;
+
+  let rect=canvas.getBoundingClientRect();
+  let mx=(e.clientX-rect.left)*(canvas.width/rect.width);
+  let my=(e.clientY-rect.top)*(canvas.height/rect.height);
+
+  let h=G.hands[HUMAN];
+  if(!h)return;
+  let totalW=h.length*(CARD_W+4);
+  let sx=(canvas.width-totalW)/2;
+  let sy=470;
+  let hitY=my>=sy-25&&my<=sy+CARD_H;
+
+  if(hitY){
+    for(let i=0;i<h.length;i++){
+      let cx=sx+i*(CARD_W+4);
+      if(mx>=cx&&mx<=cx+CARD_W){
+        let idx=G.selected.indexOf(i);
+        if(idx>=0)G.selected.splice(idx,1);
+        else G.selected.push(i);
+        render();
+        return;
+      }
+    }
+  }
+});
+
+
+playBtn.addEventListener('click',humanPlay);
+passBtn.addEventListener('click',humanPass);
+replayBtn.addEventListener('click',function(){resetGame();showGameUI();});
+
+// ─── Touch support ───
+let touchStartY=0;
+canvas.addEventListener('touchstart',function(e){
+  let t=e.touches[0];
+  let rect=canvas.getBoundingClientRect();
+  touchStartY=(t.clientY-rect.top)*(canvas.height/rect.height);
+},false);
+
+canvas.addEventListener('touchend',function(e){
+  if(G.phase==='idle'||G.phase==='gameover'){resetGame();return;}
+  if(G.currentPlayer!==HUMAN||G.turnPhase!=='human')return;
+
+  let rect=canvas.getBoundingClientRect();
+  let t=e.changedTouches[0];
+  let mx=(t.clientX-rect.left)*(canvas.width/rect.width);
+  let my=(t.clientY-rect.top)*(canvas.height/rect.height);
+
+  let h=G.hands[HUMAN];
+  if(!h)return;
+  let totalW=h.length*(CARD_W+4);
+  let sx=(canvas.width-totalW)/2;
+  let sy=470;
+
+  if(my>=sy-25&&my<=sy+CARD_H){
+    for(let i=0;i<h.length;i++){
+      let cx=sx+i*(CARD_W+4);
+      if(mx>=cx&&mx<=cx+CARD_W){
+        let idx=G.selected.indexOf(i);
+        if(idx>=0)G.selected.splice(idx,1);
+        else G.selected.push(i);
+        render();
+        return;
+      }
+    }
+  }
+},false);
+
+document.addEventListener('keydown',function(e){
+  if(e.key==='Enter')humanPlay();
+  if(e.key===' '||e.key==='Space'){e.preventDefault();humanPass();}
+  if(e.key==='r'||e.key==='R'){resetGame();showGameUI();}
+});
+
+// ─── Init ───
+G.phase='idle';
+G.hands=createDeck(); // dummy
+showGameUI();playBtn.style.display='none';passBtn.style.display='none';replayBtn.style.display='none';
+render();
+</script>
+</body>
+</html>
