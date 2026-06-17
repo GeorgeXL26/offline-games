@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Spades</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#1a1a2e;display:flex;justify-content:center;align-items:center;height:100vh;font-family:'Segoe UI',sans-serif;overflow:hidden}
+#wrap{position:relative}
+canvas{display:block;border:2px solid #333;border-radius:8px;background:#2d5a27;cursor:pointer}
+#ui{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);display:flex;gap:12px;z-index:10}
+#ui button{padding:10px 28px;font-size:16px;font-weight:bold;border:none;border-radius:6px;cursor:pointer;min-width:80px}
+#playBtn{background:#e8b84b;color:#1a1a2e}#playBtn:hover{background:#f0c860}
+#playBtn:disabled{opacity:0.4;cursor:default}
+#replayBtn{background:#4caf50;color:#fff}
+#bidOverlay{position:absolute;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);display:none;justify-content:center;align-items:center;z-index:20}
+#bidPanel{background:#2a2a4a;border-radius:12px;padding:24px;text-align:center;min-width:240px}
+#bidPanel h3{color:#ffd700;margin-bottom:12px;font-size:18px}
+#bidBtns{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;max-width:280px;margin:0 auto 10px}
+#bidBtns button{width:44px;height:36px;font-size:15px;font-weight:bold;border:none;border-radius:4px;cursor:pointer;background:#444;color:#fff}
+#bidBtns button:hover{background:#666}
+#bidBtns button.selected{background:#e8b84b;color:#1a1a2e}
+#bidConfirm{padding:8px 30px;font-size:16px;font-weight:bold;background:#e8b84b;color:#1a1a2e;border:none;border-radius:4px;cursor:pointer}
+#bidConfirm:hover{background:#f0c860}
+</style>
+</head>
+<body>
+<div id="wrap">
+<canvas id="c" width="900" height="620"></canvas>
+<div id="ui">
+<button id="playBtn">出牌</button>
+<button id="replayBtn" style="display:none">再来一局</button>
+</div>
+<div id="bidOverlay">
+<div id="bidPanel">
+<h3>Your Bid (0-13)</h3>
+<div id="bidBtns"></div>
+<div style="margin-top:6px">
+<button id="bidConfirm">Bid</button>
+</div>
+</div>
+</div>
+</div>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+const playBtn=document.getElementById('playBtn'),replayBtn=document.getElementById('replayBtn');
+const bidOverlay=document.getElementById('bidOverlay'),bidBtns=document.getElementById('bidBtns'),bidConfirm=document.getElementById('bidConfirm');
+
+// ─── Constants ───
+const SUITS=['♠','♥','♣','♦'];
+const SUIT_COL=['#222','#d32f2f','#222','#d32f2f'];
+const RANK_LABEL=['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
+const SPADES=0,HEARTS=1,CLUBS=2,DIAMONDS=3;
+const HUMAN=0,TEAMMATE=2;
+const CARD_W=56,CARD_H=80,CARD_R=6;
+const WIN_SCORE=500;
+const NAMES=['You','Alice','Bob','Charlie'];
+function nameOf(p){return p===HUMAN?'You':NAMES[p];}
+function pLabel(p){return NAMES[p];}
+
+// ─── Deck ───
+function createDeck(){
+  let d=[];
+  for(let s=0;s<4;s++)
+    for(let r=2;r<=14;r++)
+      d.push({suit:s,label:RANK_LABEL[r-2],val:r,id:d.length});
+  return d;
+}
+function shuffle(a){for(let i=a.length-1;i>0;i--){let j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a}
+function deal(){
+  let d=shuffle(createDeck());
+  let h=[[],[],[],[]];
+  for(let i=0;i<52;i++)h[i%4].push(d[i]);
+  for(let p=0;p<4;p++)h[p].sort((a,b)=>a.suit-b.suit||b.val-a.val);
+  return h;
+}
+
+// ─── Partner (teammate) helpers ───
+function team(p){return p===HUMAN||p===TEAMMATE?0:1;}
+function partners(p){return p===HUMAN?TEAMMATE:p===TEAMMATE?HUMAN:p+2>3?p-2:p+2;}
+
+// ─── Legal plays ───
+function getLegalPlays(hand,ledSuit,spadesBroken){
+  if(ledSuit==null)return hand; // leading
+  let sameSuit=hand.filter(c=>c.suit===ledSuit);
+  if(sameSuit.length)return sameSuit;
+  // Can't lead spades? That's a following rule, not relevant here
+  return hand; // void in led suit, can play anything
+}
+
+function canLeadSpades(hand,spadesBroken){
+  if(spadesBroken)return true;
+  return hand.every(c=>c.suit===SPADES);
+}
+
+// ─── Trick winner ───
+function trickWinner(trick,ledSuit){
+  let winner={idx:0,card:trick[0].card};
+  for(let i=1;i<trick.length;i++){
+    let c=trick[i].card;
+    let wc=winner.card;
+    // Trump beats non-trump
+    if(c.suit===SPADES&&wc.suit!==SPADES){winner={idx:i,card:c};}
+    else if(c.suit===wc.suit&&c.val>wc.val){winner={idx:i,card:c};}
+    // If first was trump and this isn't, first wins
+  }
+  return trick[winner.idx].player;
+}
+
+// ─── Bot AI ───
+function botBid(hand){
+  let tricks=0;
+  // Count Aces
+  for(let c of hand)if(c.val===14)tricks++;
+  // Count Kings (if 3+ in suit)
+  for(let s=0;s<4;s++){
+    let suit=hand.filter(c=>c.suit===s);
+    if(suit.length>=3&&suit.some(c=>c.val===13))tricks++;
+  }
+  // Spade length bonus
+  let spadeLen=hand.filter(c=>c.suit===SPADES).length;
+  if(spadeLen>=5)tricks+=spadeLen-4;
+  // Queens in long suits
+  for(let s=0;s<4;s++){
+    let suit=hand.filter(c=>c.suit===s);
+    if(suit.length>=3&&suit.some(c=>c.val===12)&&!suit.some(c=>c.val>=13))tricks-=0.5;
+  }
+  // Round and add noise
+  let bid=Math.round(Math.max(0,tricks+Math.random()*1));
+  return Math.min(bid,13);
+}
+
+function botPlay(hand,trick,players,spadesBroken){
+  let ledSuit=trick.length?trick[0].card.suit:null;
+  let legal=getLegalPlays(hand,ledSuit,spadesBroken);
+
+  if(!trick.length){
+    // Leading
+    if(!canLeadSpades(hand,spadesBroken)){
+      // Lead lowest non-spade
+      let nonspade=hand.filter(c=>c.suit!==SPADES).sort((a,b)=>a.val-b.val);
+      if(nonspade.length)return nonspade[0];
+    }
+    // Lead lowest from longest non-spade suit, or spades if forced
+    let bestSuit=-1,bestLen=0;
+    for(let s=1;s<4;s++){
+      let len=hand.filter(c=>c.suit===s).length;
+      if(len>bestLen){bestLen=len;bestSuit=s;}
+    }
+    if(bestSuit>0){
+      let cards=hand.filter(c=>c.suit===bestSuit).sort((a,b)=>a.val-b.val);
+      return cards[0];
+    }
+    // Lead lowest spade
+    let spades=hand.filter(c=>c.suit===SPADES).sort((a,b)=>a.val-b.val);
+    return spades[0];
+  }
+
+  // Following
+  let currentWinner=trickWinner(trick,ledSuit);
+  let myTeam=team(players[G.currentPlayer].player);
+  let winningTeam=team(currentWinner);
+  let partnerWinning=winningTeam===myTeam&&currentWinner!==G.currentPlayer;
+  // Actually let's just look at who is winning this trick
+  let winnerIdx=trickWinner(trick,ledSuit);
+  let winnerTeam=team(winnerIdx);
+  let wantWin=winnerTeam!==team(G.currentPlayer);
+
+  if(wantWin){
+    // Try to win
+    // If led suit is spades or trump needed, play highest of led suit or trump
+    let sameSuit=legal.filter(c=>c.suit===ledSuit);
+    // Highest that beats current high
+    let trickHigh=trick.reduce((best,t)=>t.card.suit===ledSuit&&t.card.val>best.val?t.card:best,{suit:ledSuit,val:0});
+    let beaters=sameSuit.filter(c=>c.val>trickHigh.val);
+    if(beaters.length){
+      beaters.sort((a,b)=>a.val-b.val);
+      return beaters[0]; // play just enough to win
+    }
+    // Can't beat with same suit, try trump if void
+    if(hand.every(c=>c.suit!==ledSuit)){
+      let trumps=legal.filter(c=>c.suit===SPADES);
+      if(trumps.length){
+        trumps.sort((a,b)=>a.val-b.val);
+        return trumps[0]; // lowest trump
+      }
+    }
+  }else{
+    // Partner winning, want to lose: play lowest
+    legal.sort((a,b)=>a.val-b.val);
+    return legal[0];
+  }
+  // Default: play lowest legal
+  legal.sort((a,b)=>a.val-b.val);
+  return legal[0];
+}
+
+// Wait, the botPlay function needs access to the players array. Let me redesign.
+// Actually, I'll pass the currentTrick array which has {card, player} objects.
+
+// Let me rewrite botPlay:
+function botPlayCard(hand,currentTrick,spadesBroken){
+  let ledSuit=currentTrick.length?currentTrick[0].card.suit:null;
+  let legal=getLegalPlays(hand,ledSuit,spadesBroken);
+
+  if(!currentTrick.length){
+    // Leading
+    if(!canLeadSpades(hand,spadesBroken)){
+      let ns=hand.filter(c=>c.suit!==SPADES).sort((a,b)=>a.val-b.val);
+      if(ns.length)return ns[0];
+    }
+    // Find longest non-spade suit, lead lowest
+    let bestSuit=-1,bestLen=0;
+    for(let s=1;s<4;s++){
+      let len=hand.filter(c=>c.suit===s).length;
+      if(len>bestLen){bestLen=len;bestSuit=s;}
+    }
+    if(bestSuit>0){
+      let suitCards=hand.filter(c=>c.suit===bestSuit).sort((a,b)=>a.val-b.val);
+      return Math.random()<0.3&&suitCards.length>2?suitCards[Math.floor(suitCards.length/2)]:suitCards[0];
+    }
+    return hand.filter(c=>c.suit===SPADES).sort((a,b)=>a.val-b.val)[0];
+  }
+
+  // Following: determine if we want to win this trick
+  let winnerIdx=trickWinner(currentTrick,ledSuit);
+  let winnerTeam=team(winnerIdx);
+  let wantWin=winnerTeam!==team(G.currentPlayer);
+
+  // Cards of led suit
+  let sameSuit=legal.filter(c=>c.suit===ledSuit);
+  // Current high card in led suit
+  let highInSuit=currentTrick.reduce((h,t)=>t.card.suit===ledSuit&&t.card.val>h.val?t.card:h,{suit:ledSuit,val:0});
+
+  if(wantWin){
+    // Try to take control
+    if(sameSuit.length){
+      let beaters=sameSuit.filter(c=>c.val>highInSuit.val);
+      if(beaters.length){beaters.sort((a,b)=>a.val-b.val);return beaters[0];}
+    }
+    // Void in led suit, try trump
+    if(hand.every(c=>c.suit!==ledSuit)){
+      let trumps=legal.filter(c=>c.suit===SPADES);
+      if(trumps.length){trumps.sort((a,b)=>a.val-b.val);return trumps[0];}
+    }
+  }else{
+    // Partner winning, dump lowest
+    legal.sort((a,b)=>a.val-b.val);
+    return legal[0];
+  }
+  // Default: lowest legal
+  legal.sort((a,b)=>a.val-b.val);
+  return legal[0];
+}
+
+// ─── Score calculation ───
+function scoreRound(bids,tricks){
+  let team0Bid=0,team1Bid=0,team0Tricks=0,team1Tricks=0;
+  for(let p=0;p<4;p++){
+    if(team(p)===0){team0Bid+=bids[p];team0Tricks+=tricks[p].length;}
+    else{team1Bid+=bids[p];team1Tricks+=tricks[p].length;}
+  }
+  let r=[{pts:0,bags:0},{pts:0,bags:0}];
+  for(let t=0;t<2;t++){
+    let bid=t?team1Bid:team0Bid;
+    let taken=t?team1Tricks:team0Tricks;
+    let nilPlayers=[];
+    for(let p=t*2;p<=t*2+1;p++)if(bids[p]===0)nilPlayers.push(p);
+    // Nil bonus/penalty
+    for(let p of nilPlayers){
+      if(tricks[p].length===0)r[t].pts+=100;
+      else r[t].pts-=100;
+    }
+    let nonNilBid=bid;
+    for(let p of nilPlayers)nonNilBid-=bids[p];
+    let nonNilTricks=taken;
+    for(let p of nilPlayers)nonNilTricks-=tricks[p].length;
+    if(nonNilBid>0){
+      if(nonNilTricks>=nonNilBid){
+        r[t].pts+=nonNilBid*10;
+        let bags=nonNilTricks-nonNilBid;
+        r[t].pts+=bags;
+        r[t].bags=bags;
+      }else{
+        r[t].pts-=nonNilBid*10;
+      }
+    }
+  }
+  return r;
+}
+
+// ─── Game State ───
+let G={
+  phase:'idle', hands:[], currentPlayer:0, dealer:0,
+  bids:[null,null,null,null], tricks:[[],[],[],[]],
+  currentTrick:[], trickIndex:0, spadesBroken:false,
+  scores:[{pts:0,bags:0},{pts:0,bags:0}],
+  selected:[], msg:'', botTimer:null, turnPhase:'waiting',
+  roundScores:[], trickHistory:[], trickInProgress:false
+};
+
+function resetGame(){
+  if(G.botTimer){clearTimeout(G.botTimer);G.botTimer=null;}
+  G.phase='idle';
+  G.hands=deal();
+  G.currentPlayer=0;
+  G.bids=[null,null,null,null];
+  G.tricks=[[],[],[],[]];
+  G.currentTrick=[];
+  G.trickIndex=0;
+  G.spadesBroken=false;
+  G.scores=[{pts:0,bags:0},{pts:0,bags:0}];
+  G.selected=[];
+  G.msg='';
+  G.turnPhase='waiting';
+  G.roundScores=[];
+  G.trickHistory=[];
+  G.trickInProgress=false;
+  showGameUI();
+  render();
+  startBidding();
+}
+
+function startBidding(){
+  G.phase='bidding';
+  G.currentPlayer=0;
+  G.msg='Bidding round';
+  render();
+  nextBidder();
+}
+
+function nextBidder(){
+  if(G.phase!=='bidding')return;
+  if(G.bids.every(b=>b!==null)){
+    G.msg='All bids in! Starting play...';
+    render();
+    setTimeout(()=>startPlay(),500);
+    return;
+  }
+  if(G.currentPlayer===HUMAN){
+    showBidUI();
+  }else{
+    G.turnPhase='bot';
+    render();
+    G.botTimer=setTimeout(()=>{
+      let bid=botBid(G.hands[G.currentPlayer]);
+      G.bids[G.currentPlayer]=bid;
+      G.msg=pLabel(G.currentPlayer)+' bids '+bid;
+      G.currentPlayer=(G.currentPlayer+1)%4;
+      render();
+      setTimeout(()=>nextBidder(),400);
+    },600);
+  }
+}
+
+function showBidUI(){
+  bidOverlay.style.display='flex';
+  bidBtns.innerHTML='';
+  let selectedBid=null;
+  for(let i=0;i<=13;i++){
+    let btn=document.createElement('button');
+    btn.textContent=i;
+    btn.onclick=()=>{
+      bidBtns.querySelectorAll('button').forEach(b=>b.classList.remove('selected'));
+      btn.classList.add('selected');
+      selectedBid=i;
+    };
+    if(i===parseInt(localStorage._lastBid)||i===0)btn.classList.add('selected');
+    bidBtns.appendChild(btn);
+  }
+  bidConfirm.onclick=()=>{
+    let sel=bidBtns.querySelector('.selected');
+    if(!sel)return;
+    let bid=parseInt(sel.textContent);
+    localStorage._lastBid=bid;
+    bidOverlay.style.display='none';
+    G.bids[HUMAN]=bid;
+    G.msg='You bid '+bid;
+    G.currentPlayer=(G.currentPlayer+1)%4;
+    render();
+    setTimeout(()=>nextBidder(),300);
+  };
+}
+
+function startPlay(){
+  if(G.phase!=='bidding')return;
+  G.phase='play';
+  G.trickIndex=0;
+  // Player who bid first leads first trick
+  G.currentPlayer=0;
+  G.trickInProgress=false;
+  G.msg='Trick '+(G.trickIndex+1)+' of 13 - '+getBidsStr();
+  render();
+  nextTurn();
+}
+
+function getBidsStr(){
+  return NAMES[0]+'='+G.bids[0]+' '+NAMES[1]+'='+G.bids[1]+' '+NAMES[2]+'='+G.bids[2]+' '+NAMES[3]+'='+G.bids[3];
+}
+
+function nextTurn(){
+  if(G.phase!=='play')return;
+  if(!G.trickInProgress&&!G.currentTrick.length){
+    // New trick
+    G.trickInProgress=true;
+  }
+  if(G.currentPlayer===HUMAN){
+    G.turnPhase='human';
+    playBtn.disabled=false;
+    render();
+  }else{
+    G.turnPhase='bot';
+    playBtn.disabled=true;
+    render();
+    G.botTimer=setTimeout(()=>{
+      if(G.phase!=='play')return;
+      doBotTurn();
+    },500);
+  }
+}
+
+function doBotTurn(){
+  let card=botPlayCard(G.hands[G.currentPlayer],G.currentTrick,G.spadesBroken);
+  playCard(G.currentPlayer,card);
+}
+
+function playCard(player,card){
+  // Remove from hand
+  let idx=G.hands[player].findIndex(h=>h.id===card.id);
+  if(idx>=0)G.hands[player].splice(idx,1);
+  G.currentTrick.push({card,player});
+  let suitLabel=SUITS[card.suit]+card.label;
+  G.msg=pLabel(player)+' plays '+suitLabel;
+  render();
+
+  // Check if trick is complete
+  if(G.currentTrick.length===4){
+    let winner=trickWinner(G.currentTrick,G.currentTrick[0].card.suit);
+    G.tricks[winner].push([...G.currentTrick]);
+    for(let t of G.currentTrick)if(t.card.suit===SPADES)G.spadesBroken=true;
+    G.trickIndex++;
+    G.trickInProgress=false;
+    // Keep cards visible for 3s delay
+    let idx=G.trickIndex;
+    let w=winner;
+    G.msg='Trick to '+NAMES[winner];
+    render();
+    setTimeout(()=>{
+      if(G.phase!=='play')return;
+      G.currentPlayer=w;
+      G.currentTrick=[];
+      if(idx>=13){finishRound();return;}
+      G.msg='Trick '+(idx+1)+' of 13';
+      render();
+      nextTurn();
+    },3000);
+  }else{
+    G.currentPlayer=(G.currentPlayer+1)%4;
+    setTimeout(()=>nextTurn(),300);
+  }
+}
+
+function finishRound(){
+  let result=scoreRound(G.bids,G.tricks);
+  for(let t=0;t<2;t++){
+    G.scores[t].pts+=result[t].pts;
+    G.scores[t].bags+=result[t].bags;
+  }
+  // Check bag penalty
+  for(let t=0;t<2;t++){
+    if(G.scores[t].bags>=10){
+      G.scores[t].pts-=100;
+      G.scores[t].bags-=10;
+      G.msg+=' '+['Your team','Opponents'][t]+' lost 100 (10 bags)!';
+    }
+  }
+  G.roundScores.push({team0:{...result[0]},team1:{...result[1]}});
+  G.msg='Round over! You: '+G.scores[0].pts+' pts | Opponents: '+G.scores[1].pts+' pts';
+
+  // Check for game winner
+  if(G.scores[0].pts>=WIN_SCORE||G.scores[1].pts>=WIN_SCORE){
+    G.phase='gameover';
+    G.winner=G.scores[0].pts>=WIN_SCORE?0:1;
+  }else{
+    // Next round
+    G.dealer=(G.dealer+1)%4;
+    G.botTimer=setTimeout(()=>{
+      G.hands=deal();
+      G.bids=[null,null,null,null];
+      G.tricks=[[],[],[],[]];
+      G.currentTrick=[];
+      G.trickIndex=0;
+      G.spadesBroken=false;
+      G.selected=[];
+      G.msg='New round!';
+      render();
+      startBidding();
+    },1500);
+  }
+  render();
+}
+
+// ─── Human play ───
+function humanPlay(){
+  if(G.turnPhase!=='human')return;
+  if(!G.selected.length){G.msg='Select a card!';render();return;}
+  let card=G.selected.map(i=>G.hands[HUMAN][i]);
+  if(card.length!==1){G.msg='Select one card';render();return;}
+  let c=card[0];
+  let ledSuit=G.currentTrick.length?G.currentTrick[0].card.suit:null;
+  let legal=getLegalPlays(G.hands[HUMAN],ledSuit,G.spadesBroken);
+  if(!legal.some(l=>l.id===c.id)){
+    if(ledSuit!=null)G.msg='Must follow '+SUITS[ledSuit]+'!';
+    else if(c.suit===SPADES&&!canLeadSpades(G.hands[HUMAN],G.spadesBroken))
+      G.msg='Spades not broken yet!';
+    else G.msg='Invalid play!';
+    render();return;
+  }
+  G.selected=[];
+  G.turnPhase='waiting';
+  playBtn.disabled=true;
+  playCard(HUMAN,c);
+}
+
+// ─── Canvas Events ───
+canvas.addEventListener('click',function(e){
+  if(G.phase==='idle'){resetGame();return;}
+  if(G.phase!=='play'||G.currentPlayer!==HUMAN||G.turnPhase!=='human')return;
+  let rect=canvas.getBoundingClientRect();
+  let mx=(e.clientX-rect.left)*(canvas.width/rect.width);
+  let my=(e.clientY-rect.top)*(canvas.height/rect.height);
+  let h=G.hands[HUMAN];
+  if(!h)return;
+  let totalW=h.length*(CARD_W+4);
+  let sx=(canvas.width-totalW)/2,sy=480;
+  if(my>=sy-25&&my<=sy+CARD_H){
+    for(let i=0;i<h.length;i++){
+      let cx=sx+i*(CARD_W+4);
+      if(mx>=cx&&mx<=cx+CARD_W){
+        G.selected=[i];
+        render();
+        return;
+      }
+    }
+  }
+});
+
+// Touch support
+canvas.addEventListener('touchstart',function(e){
+  if(G.phase==='idle'){return;}
+},false);
+canvas.addEventListener('touchend',function(e){
+  if(G.phase==='idle'){resetGame();return;}
+  if(G.phase!=='play'||G.currentPlayer!==HUMAN||G.turnPhase!=='human')return;
+  let rect=canvas.getBoundingClientRect();
+  let t=e.changedTouches[0];
+  let mx=(t.clientX-rect.left)*(canvas.width/rect.width);
+  let my=(t.clientY-rect.top)*(canvas.height/rect.height);
+  let h=G.hands[HUMAN];
+  if(!h)return;
+  let totalW=h.length*(CARD_W+4);
+  let sx=(canvas.width-totalW)/2,sy=480;
+  if(my>=sy-25&&my<=sy+CARD_H){
+    for(let i=0;i<h.length;i++){
+      let cx=sx+i*(CARD_W+4);
+      if(mx>=cx&&mx<=cx+CARD_W){
+        G.selected=[i];
+        render();
+        return;
+      }
+    }
+  }
+},false);
+
+document.addEventListener('keydown',function(e){
+  if(e.key==='Enter')humanPlay();
+  if(e.key==='r'||e.key==='R'){if(G.phase==='idle'||G.phase==='gameover'){resetGame();}}
+});
+
+playBtn.addEventListener('click',humanPlay);
+replayBtn.addEventListener('click',function(){resetGame();showGameUI();});
+
+function showGameUI(){playBtn.style.display='inline-block';replayBtn.style.display='none';}
+
+// ─── Rendering ───
+function render(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle='#2d5a27';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  if(G.phase==='idle'){renderIdle();return;}
+
+  // Player positions
+  renderPlayer(HUMAN,'bottom');
+  renderPlayer(1,'left');
+  renderPlayer(TEAMMATE,'top');
+  renderPlayer(3,'right');
+
+  // Center: current trick
+  renderTrick();
+
+  // Info bar
+  renderInfo();
+
+  if(G.phase==='gameover')renderGameOver();
+}
+
+function renderIdle(){
+  ctx.fillStyle='rgba(0,0,0,0.6)';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle='#ffd700';
+  ctx.font='bold 48px sans-serif';
+  ctx.textAlign='center';
+  ctx.fillText('Spades',450,250);
+  ctx.fillStyle='#fff';
+  ctx.font='16px sans-serif';
+  ctx.fillText('Partner: '+NAMES[TEAMMATE]+' | Team A: '+NAMES[HUMAN]+'+'+NAMES[TEAMMATE]+' vs Team B: '+NAMES[1]+'+'+NAMES[3],450,290);
+  ctx.font='20px sans-serif';
+  ctx.fillText('Click to start',450,340);
+}
+
+function renderPlayer(p,pos){
+  let hand=G.hands[p];
+  if(!hand||!hand.length)return;
+  let isHuman=p===HUMAN;
+  let n=hand.length;
+
+  let bx,by;
+  if(pos==='bottom'){
+    let w=n*(CARD_W+4);
+    bx=(canvas.width-w)/2;by=470;
+    let lastSuit=-1;
+    for(let i=0;i<n;i++){
+      let cx=bx+i*(CARD_W+4);
+      if(hand[i].suit!==lastSuit){
+        lastSuit=hand[i].suit;
+        ctx.fillStyle=lastSuit===SPADES?'#222':SUIT_COL[lastSuit];
+        ctx.font='bold 12px sans-serif';
+        ctx.textAlign='center';
+        ctx.fillText(SUITS[lastSuit],cx+CARD_W/2,by-8);
+      }
+      let sel=isHuman&&G.selected.includes(i);
+      drawCard(cx,sel?by-18:by,hand[i],true);
+      if(sel){
+        ctx.fillStyle='rgba(255,215,0,0.3)';
+        roundRect(ctx,cx,sel?by-18:by,CARD_W,CARD_H,CARD_R);
+        ctx.fill();
+      }
+    }
+  }else{
+    if(pos==='top'){
+      bx=canvas.width/2-60;by=8;
+      for(let i=0;i<Math.min(n,6);i++)drawCard(bx+i*8,by,hand[i],false);
+      ctx.fillStyle='#aaa';
+      ctx.font='12px sans-serif';
+      ctx.textAlign='center';
+      ctx.fillText(NAMES[p]+' ('+n+')',canvas.width/2,by+90);
+    }else if(pos==='left'){
+      bx=12;by=160;
+      for(let i=0;i<Math.min(n,6);i++)drawCard(bx,by+i*14,hand[i],false);
+      ctx.fillStyle='#aaa';
+      ctx.font='11px sans-serif';
+      ctx.textAlign='center';
+      ctx.fillText(NAMES[p]+' ('+n+')',bx+CARD_W/2,by+Math.min(n,6)*14+15);
+    }else{
+      bx=canvas.width-12-CARD_W;by=160;
+      for(let i=0;i<Math.min(n,6);i++)drawCard(bx,by+i*14,hand[i],false);
+      ctx.fillStyle='#aaa';
+      ctx.font='11px sans-serif';
+      ctx.textAlign='center';
+      ctx.fillText(NAMES[p]+' ('+n+')',bx+CARD_W/2,by+Math.min(n,6)*14+15);
+    }
+  }
+
+  let isActive=G.phase==='play'&&G.currentPlayer===p;
+  if(isActive){
+    ctx.strokeStyle='#ffd700';
+    ctx.lineWidth=2;
+    ctx.beginPath();
+    if(pos==='bottom')ctx.arc(canvas.width/2,465,15,0,Math.PI*2);
+    else if(pos==='top')ctx.arc(canvas.width/2,5,15,0,Math.PI*2);
+    else if(pos==='left')ctx.arc(25,190,15,0,Math.PI*2);
+    else ctx.arc(canvas.width-25,190,15,0,Math.PI*2);
+    ctx.stroke();
+  }
+}
+
+function renderTrick(){
+  let cx=canvas.width/2,cy=245;
+  if(G.currentTrick.length){
+    let playerPos=[
+      {x:cx-28,y:cy+50,labelY:cy+82},  // You (bottom)
+      {x:cx-130,y:cy-25,labelY:cy+8}, // Alice (left)
+      {x:cx-28,y:cy-90,labelY:cy-98}, // Bob (top)
+      {x:cx+74,y:cy-25,labelY:cy+8},  // Charlie (right)
+    ];
+    for(let t of G.currentTrick){
+      let pos=playerPos[t.player];
+      drawCard(pos.x,pos.y,t.card,true);
+      ctx.fillStyle='#ddd';
+      ctx.font='11px sans-serif';
+      ctx.textAlign='center';
+      ctx.fillText(NAMES[t.player],pos.x+CARD_W/2,pos.labelY);
+    }
+  }
+
+  // Trick counts at bottom
+  ctx.fillStyle='#888';
+  ctx.font='11px sans-serif';
+  ctx.textAlign='left';
+  ctx.fillText('Tricks: You='+G.tricks[HUMAN].length+' '+NAMES[TEAMMATE]+'='+G.tricks[TEAMMATE].length,20,455);
+  ctx.textAlign='right';
+  ctx.fillText(NAMES[1]+'='+G.tricks[1].length+' '+NAMES[3]+'='+G.tricks[3].length,canvas.width-20,455);
+}
+
+function renderInfo(){
+  ctx.fillStyle='#fff';
+  ctx.font='13px sans-serif';
+  ctx.textAlign='center';
+
+  let sA=G.scores[0],sB=G.scores[1];
+  let info='You & '+NAMES[TEAMMATE]+': '+sA.pts+' pts ('+sA.bags+' bags) | '+NAMES[1]+' & '+NAMES[3]+': '+sB.pts+' pts ('+sB.bags+' bags)';
+  ctx.fillText(info,canvas.width/2,118);
+
+  if(G.msg){
+    ctx.fillStyle='#ffd700';
+    ctx.font='14px sans-serif';
+    ctx.fillText(G.msg,canvas.width/2,140);
+  }
+
+  if(G.phase==='bidding'||G.phase==='play'){
+    let bidStr='';
+    for(let p=0;p<4;p++)bidStr+=NAMES[p]+'='+(G.bids[p]==null?'?':G.bids[p])+' ';
+    ctx.fillStyle='#aaa';
+    ctx.font='11px sans-serif';
+    ctx.fillText(bidStr,canvas.width/2,103);
+  }
+
+  if(G.spadesBroken){
+    ctx.fillStyle='#ff9800';
+    ctx.font='11px sans-serif';
+    ctx.textAlign='right';
+    ctx.fillText('♠ broken',canvas.width-20,103);
+  }
+}
+
+function renderGameOver(){
+  replayBtn.style.display='inline-block';
+  playBtn.style.display='none';
+  ctx.fillStyle='rgba(0,0,0,0.6)';
+  ctx.fillRect(0,200,canvas.width,120);
+  ctx.textAlign='center';
+  let iWon=team(HUMAN)===G.winner;
+  ctx.fillStyle=iWon?'#4caf50':'#f44336';
+  ctx.font='bold 36px sans-serif';
+  ctx.fillText(iWon?'Your Team Wins!':'Game Over',canvas.width/2,260);
+  ctx.fillStyle='#fff';
+  ctx.font='18px sans-serif';
+  ctx.fillText((G.winner?'Opponents':'Your team')+' won! ('+G.scores[G.winner].pts+' pts)',canvas.width/2,295);
+}
+
+function drawCard(x,y,card,faceUp){
+  if(!faceUp){
+    ctx.fillStyle='#1a3a6b';
+    ctx.strokeStyle='#3a6bab';
+    ctx.lineWidth=1.5;
+    roundRect(ctx,x,y,CARD_W,CARD_H,CARD_R);
+    ctx.fill();ctx.stroke();
+    ctx.fillStyle='#3a6bab';
+    ctx.font='16px sans-serif';
+    ctx.textAlign='center';
+    ctx.fillText('★',x+CARD_W/2,y+CARD_H/2+5);
+    return;
+  }
+  ctx.fillStyle='#f5f0e8';
+  ctx.strokeStyle='#999';
+  ctx.lineWidth=1;
+  roundRect(ctx,x,y,CARD_W,CARD_H,CARD_R);
+  ctx.fill();ctx.stroke();
+  let isRed=card.suit===1||card.suit===3;
+  let color=isRed?'#d32f2f':'#222';
+  ctx.fillStyle=color;
+  ctx.font='bold 14px sans-serif';
+  ctx.textAlign='center';
+  ctx.fillText(SUITS[card.suit]+card.label,x+CARD_W/2,y+22);
+  ctx.font='24px sans-serif';
+  ctx.fillText(SUITS[card.suit],x+CARD_W/2,y+52);
+}
+
+function roundRect(ctx,x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+  ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);
+  ctx.closePath();
+}
+
+// ─── Init ───
+G.phase='idle';
+G.hands=createDeck();
+replayBtn.style.display='none';
+playBtn.style.display='none';
+render();
+</script>
+</body>
+</html>
