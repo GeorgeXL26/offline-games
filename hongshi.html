@@ -272,55 +272,79 @@ function pickRandom(a){return a[Math.floor(Math.random()*a.length)]}
 
 function botChoosePlay(hand,lastPlay){
   if(!hand||!hand.length)return null;
-
   let plays=genPlays(hand,lastPlay);
   if(!plays.length)return null;
 
+  // Analyze hand structure
+  let sorted=[...hand].sort((a,b)=>b.val-a.val);
+  let byVal={};
+  for(let c of sorted){(byVal[c.val]=byVal[c.val]||[]).push(c);}
+  let allVals=Object.keys(byVal).map(Number);
+
+  // Opponent threat: track who's close to winning
+  let minOpp=99;
+  for(let p=0;p<4;p++){
+    if(p===G.currentPlayer||G.finished[p])continue;
+    if(G.hands[p]&&G.hands[p].length<minOpp)minOpp=G.hands[p].length;
+  }
+  let urgent=minOpp<=3;
+
   if(!lastPlay||!lastPlay.type){
-    // Leading: mix of plays with some strategy
+    // ─── Leading ───
     let singles=plays.filter(p=>p.type==='single');
     let pairs=plays.filter(p=>p.type==='pair');
-    // Also find straights/sisters
-    let sorted=[...hand].sort((a,b)=>b.val-a.val);
-    let byVal={};
-    for(let c of sorted){(byVal[c.val]=byVal[c.val]||[]).push(c);}
-    let strs=findStraights(byVal,3).filter(s=>{let bv={};for(let c of s.cards){(bv[c.val]=bv[c.val]||[]).push(c)};let b=findBombs(bv);return!b.length;});
-    let sists=findSisters(byVal,2);
-    // Avoid bombs for leading unless desperate
-    let safePlays=[];
-    if(singles.length)safePlays.push({w:'single',p:singles});
-    if(pairs.length&&Math.random()<0.4)safePlays.push({w:'pair',p:pairs});
-    if(strs.length&&Math.random()<0.3)safePlays.push({w:'str',p:strs});
-    if(sists.length&&Math.random()<0.2)safePlays.push({w:'sist',p:sists});
-    // Also add bombs as low priority
-    let bombs=plays.filter(p=>isBomb(p.type));
-    if(bombs.length&&hand.length<=4)safePlays.push({w:'bomb',p:bombs});
-    if(!safePlays.length)return singles.length?singles[0]:plays[0];
-    let chosen=pickRandom(safePlays);
-    chosen.p.sort((a,b)=>a.rank-b.rank);
-    // Sometimes play a middle card instead of lowest
-    if(chosen.p.length>2&&Math.random()<0.3)
-      return chosen.p[Math.floor(chosen.p.length/2)];
-    return chosen.p[0];
+
+    // Pure singles: cards with no duplicates in hand
+    let pureVals=allVals.filter(v=>byVal[v].length===1&&v!==RED10&&v!==BJOKER&&v!==SJOKER);
+    let pureSingles=singles.filter(p=>pureVals.includes(p.rank));
+
+    // Play straights/sisters occasionally
+    if(Math.random()<0.2){
+      let strs=plays.filter(p=>p.type==='straight');
+      if(strs.length)return strs.sort((a,b)=>a.rank-b.rank)[0];
+      let sits=plays.filter(p=>p.type==='sister');
+      if(sits.length)return sits.sort((a,b)=>a.rank-b.rank)[0];
+    }
+
+    // Play pairs sometimes
+    if(pairs.length&&Math.random()<0.35){
+      pairs.sort((a,b)=>a.rank-b.rank);
+      return pairs[0];
+    }
+
+    // Play singles: prefer pure (unpaired) cards to avoid breaking pairs
+    let pool=pureSingles.length?pureSingles:singles;
+    if(!pool.length)return plays[0];
+    pool.sort((a,b)=>a.rank-b.rank);
+    // Mix up rank level
+    if(pool.length>2&&Math.random()<0.3)
+      return pool[Math.floor(pool.length*0.3)];
+    return pool[0];
   }
 
-  if(!plays.length)return null;
-
-  // Following: prefer non-bomb, but mix up rank choices
+  // ─── Following ───
   let nonBombs=plays.filter(p=>!isBomb(p.type));
   let bombs=plays.filter(p=>isBomb(p.type));
 
   if(nonBombs.length){
     nonBombs.sort((a,b)=>a.rank-b.rank);
-    // Sometimes play middle, sometimes lowest
-    if(nonBombs.length>2&&Math.random()<0.3)
-      return nonBombs[Math.floor(nonBombs.length/2)];
+    // Play mid-range when holding many options
+    if(nonBombs.length>3&&Math.random()<0.25)
+      return nonBombs[Math.floor(nonBombs.length*0.3)];
     return nonBombs[0];
   }
 
-  // Only bombs left - use if behind in cards
-  if(bombs.length&&hand.length<=3)return bombs[0];
-  return null; // pass rather than waste bombs
+  // Bomb only when urgent or low on cards
+  if(bombs.length){
+    if(urgent||hand.length<=5){
+      bombs.sort((a,b)=>{
+        let oa=bombOrder(a.type),ob=bombOrder(b.type);
+        return oa!==ob?oa-ob:a.rank-b.rank;
+      });
+      return bombs[0];
+    }
+  }
+  return null;
 }
 
 // ─── Game State ───
@@ -566,12 +590,6 @@ function render(){
       let ta=G.teams.teamA.map(p=>'P'+p).join(','),tb=G.teams.teamB.map(p=>'P'+p).join(',');
       info='Team A: '+ta+' | Team B: '+tb;
       if(G.teams.isSolo)info='SOLO: P'+G.teams.teamA[0]+' vs P'+G.teams.teamB.join(',P');
-    }else if(humanHasRed){
-      // You know your teammate
-      let myTeam=G.teams.teamA.includes(HUMAN)?G.teams.teamA:G.teams.teamB;
-      let otherTeam=G.teams.teamA.includes(HUMAN)?G.teams.teamB:G.teams.teamA;
-      info='You & P'+(myTeam.find(p=>p!==HUMAN)||'?')+' | Opponents: P'+otherTeam.join(',P');
-      if(G.teams.isSolo)info='You are SOLO vs P'+otherTeam.join(',P');
     }else{
       info='Teams hidden ('+(2-G.played10s)+' red 10s remain)';
     }
