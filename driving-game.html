@@ -2,56 +2,118 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>Driving Game</title>
     <style>
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: Arial, sans-serif;
         }
 
         body {
             display: flex;
             justify-content: center;
             align-items: center;
-            min-height: 100vh;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            font-family: Arial, sans-serif;
+            flex-direction: column;
         }
 
         .container {
-            text-align: center;
-            background: rgba(0, 0, 0, 0.8);
-            padding: 20px;
-            border-radius: 10px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+            height: 100%;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.3);
         }
 
         h1 {
             color: #00ff00;
-            margin-bottom: 10px;
+            font-size: clamp(20px, 5vw, 32px);
             text-shadow: 0 0 10px #00ff00;
+            margin-top: 5px;
         }
 
         .info {
             color: #00ff00;
-            margin-bottom: 15px;
-            font-size: 14px;
+            font-size: clamp(12px, 4vw, 16px);
+            text-shadow: 0 0 5px #00ff00;
         }
 
         canvas {
             border: 3px solid #00ff00;
             background: linear-gradient(to bottom, #87CEEB, #90EE90);
-            display: block;
-            margin: 0 auto;
             box-shadow: 0 0 20px rgba(0, 255, 0, 0.5);
+            max-width: 100vw;
+            max-height: 70vh;
+            flex: 1;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
         }
 
         .controls {
             color: #00ff00;
-            margin-top: 15px;
-            font-size: 12px;
-            line-height: 1.5;
+            font-size: clamp(10px, 3vw, 14px);
+            text-align: center;
+            line-height: 1.3;
+            padding-bottom: 10px;
+        }
+
+        .touch-controls {
+            display: none;
+            gap: 15px;
+            justify-content: center;
+            align-items: center;
+            padding: 10px;
+            width: 100%;
+            margin-top: auto;
+        }
+
+        .touch-controls.active {
+            display: flex;
+        }
+
+        .control-button {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: rgba(0, 255, 0, 0.7);
+            border: 2px solid #00ff00;
+            color: black;
+            font-size: 24px;
+            font-weight: bold;
+            cursor: pointer;
+            touch-action: manipulation;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            box-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
+            transition: all 0.1s;
+            active-state: true;
+        }
+
+        .control-button:active {
+            background: rgba(0, 255, 0, 0.9);
+            box-shadow: 0 0 20px rgba(0, 255, 0, 0.8);
+            transform: scale(0.95);
+        }
+
+        .control-button:hover {
+            background: rgba(0, 255, 0, 0.85);
         }
 
         .game-over {
@@ -61,43 +123,71 @@
             left: 50%;
             transform: translate(-50%, -50%);
             background: rgba(0, 0, 0, 0.95);
-            padding: 40px;
+            padding: clamp(20px, 5vw, 40px);
             border: 3px solid #ff0000;
             border-radius: 10px;
             text-align: center;
             z-index: 1000;
             box-shadow: 0 0 30px rgba(255, 0, 0, 0.7);
+            max-width: 90vw;
         }
 
         .game-over h2 {
             color: #ff0000;
             margin-bottom: 20px;
-            font-size: 32px;
+            font-size: clamp(24px, 6vw, 32px);
             text-shadow: 0 0 10px #ff0000;
         }
 
         .game-over p {
             color: #00ff00;
             margin: 10px 0;
-            font-size: 18px;
+            font-size: clamp(14px, 4vw, 18px);
         }
 
         .game-over button {
             margin-top: 20px;
-            padding: 10px 20px;
+            padding: clamp(8px, 3vw, 12px) clamp(16px, 5vw, 24px);
             background: #00ff00;
             color: black;
             border: none;
             border-radius: 5px;
-            font-size: 16px;
+            font-size: clamp(14px, 4vw, 18px);
             font-weight: bold;
             cursor: pointer;
+            touch-action: manipulation;
             transition: all 0.3s;
         }
 
-        .game-over button:hover {
+        .game-over button:hover,
+        .game-over button:active {
             background: #00cc00;
             box-shadow: 0 0 10px #00ff00;
+        }
+
+        @media (max-width: 768px) {
+            .controls {
+                display: none;
+            }
+
+            canvas {
+                max-height: 60vh;
+            }
+        }
+
+        @media (orientation: landscape) {
+            h1 {
+                font-size: 20px;
+                margin-top: 2px;
+            }
+
+            canvas {
+                max-height: 85vh;
+            }
+
+            .controls {
+                display: none;
+            }
         }
     </style>
 </head>
@@ -107,10 +197,14 @@
         <div class="info">
             <p>Score: <span id="score">0</span> | Health: <span id="health">100</span>%</p>
         </div>
-        <canvas id="gameCanvas" width="400" height="600"></canvas>
+        <canvas id="gameCanvas"></canvas>
         <div class="controls">
             <p>⬅️ A/D or Arrow Keys to Move ⬅️</p>
             <p>🚗 Avoid red cars! Collect green coins for points! 🚗</p>
+        </div>
+        <div class="touch-controls" id="touchControls">
+            <button class="control-button" id="leftBtn">⬅️</button>
+            <button class="control-button" id="rightBtn">➡️</button>
         </div>
     </div>
 
@@ -125,6 +219,40 @@
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
         const gameOverScreen = document.getElementById('gameOverScreen');
+        const touchControls = document.getElementById('touchControls');
+
+        // Detect if touch device
+        const isTouchDevice = () => {
+            return (('ontouchstart' in window) ||
+                    (navigator.maxTouchPoints > 0) ||
+                    (navigator.msMaxTouchPoints > 0));
+        };
+
+        // Show touch controls on mobile
+        if (isTouchDevice()) {
+            touchControls.classList.add('active');
+        }
+
+        // Set canvas size responsively
+        function resizeCanvas() {
+            const maxWidth = Math.min(window.innerWidth - 20, 600);
+            const maxHeight = window.innerHeight * 0.7;
+            const aspectRatio = 400 / 600;
+
+            let width = maxWidth;
+            let height = width / aspectRatio;
+
+            if (height > maxHeight) {
+                height = maxHeight;
+                width = height * aspectRatio;
+            }
+
+            canvas.width = Math.floor(width);
+            canvas.height = Math.floor(height);
+        }
+
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
 
         // Game variables
         let score = 0;
@@ -148,14 +276,63 @@
         let coins = [];
         let particles = [];
 
-        // Keyboard input
+        // Input handling - Keyboard
         const keys = {};
         window.addEventListener('keydown', (e) => {
-            keys[e.key] = true;
+            keys[e.key.toLowerCase()] = true;
+            e.preventDefault();
         });
         window.addEventListener('keyup', (e) => {
-            keys[e.key] = false;
+            keys[e.key.toLowerCase()] = false;
+            e.preventDefault();
         });
+
+        // Touch controls
+        const leftBtn = document.getElementById('leftBtn');
+        const rightBtn = document.getElementById('rightBtn');
+
+        let touchLeft = false;
+        let touchRight = false;
+
+        function setupTouchButton(button, isLeft) {
+            button.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                if (isLeft) touchLeft = true;
+                else touchRight = true;
+            });
+
+            button.addEventListener('touchend', (e) => {
+                e.preventDefault();
+                if (isLeft) touchLeft = false;
+                else touchRight = false;
+            });
+
+            button.addEventListener('mousedown', () => {
+                if (isLeft) touchLeft = true;
+                else touchRight = true;
+            });
+
+            button.addEventListener('mouseup', () => {
+                if (isLeft) touchLeft = false;
+                else touchRight = false;
+            });
+
+            button.addEventListener('mouseleave', () => {
+                if (isLeft) touchLeft = false;
+                else touchRight = false;
+            });
+        }
+
+        setupTouchButton(leftBtn, true);
+        setupTouchButton(rightBtn, false);
+
+        // Gyroscope support for mobile
+        let gyroX = 0;
+        if (isTouchDevice() && window.DeviceOrientationEvent) {
+            window.addEventListener('deviceorientation', (event) => {
+                gyroX = event.gamma || 0; // Range: -90 to 90
+            });
+        }
 
         // Enemy car class
         class Enemy {
@@ -295,13 +472,18 @@
 
         // Update game
         function update() {
-            // Player movement
-            if (keys['a'] || keys['ArrowLeft']) {
+            // Player movement - Keyboard & Touch
+            if (keys['a'] || keys['arrowleft'] || touchLeft) {
                 player.velocityX = -player.maxSpeed;
-            } else if (keys['d'] || keys['ArrowRight']) {
+            } else if (keys['d'] || keys['arrowright'] || touchRight) {
                 player.velocityX = player.maxSpeed;
             } else {
                 player.velocityX *= 0.8;
+            }
+
+            // Gyroscope support (if enabled)
+            if (isTouchDevice() && Math.abs(gyroX) > 10) {
+                player.velocityX = (gyroX / 90) * player.maxSpeed;
             }
 
             player.x += player.velocityX;
@@ -408,6 +590,13 @@
 
         // Start game
         gameLoop();
+
+        // Prevent default touch behaviors
+        document.addEventListener('touchmove', (e) => {
+            if (e.target.tagName !== 'BUTTON') {
+                e.preventDefault();
+            }
+        }, { passive: false });
     </script>
 </body>
 </html>
