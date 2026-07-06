@@ -1,1 +1,1 @@
-It is nice games! Enjoy
+It is a whole bunch of games! Enjoy
